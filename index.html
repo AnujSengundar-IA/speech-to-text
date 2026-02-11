@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Whisper Streaming Demo</title>
+</head>
+
+<body>
+    <h2>🎙️ Whisper CPU Streaming Demo</h2>
+    <button onclick="start()">Start</button>
+    <button onclick="stop()">Stop</button>
+    <pre id="output"></pre>
+
+    <script>
+        let ws;
+        let audioContext;
+        let processor;
+        let source;
+        let mediaStream;
+
+        async function start() {
+            document.getElementById("output").textContent = "";
+
+            ws = new WebSocket("ws://localhost:8999/ws/transcribe");
+            ws.binaryType = "arraybuffer";
+
+            ws.onmessage = (e) => {
+                document.getElementById("output").textContent += e.data + " ";
+            };
+
+            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioContext = new AudioContext({ sampleRate: 16000 });
+
+            source = audioContext.createMediaStreamSource(mediaStream);
+            processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+
+            processor.onaudioprocess = (e) => {
+                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+                const input = e.inputBuffer.getChannelData(0);
+                const pcm16 = new Int16Array(input.length);
+
+                for (let i = 0; i < input.length; i++) {
+                    pcm16[i] = Math.max(-1, Math.min(1, input[i])) * 32767;
+                }
+
+                ws.send(pcm16.buffer);
+            };
+        }
+
+        function stop() {
+            if (!ws) return;
+
+            // Tell backend we're done
+            ws.send(JSON.stringify({ event: "stop" }));
+
+            // Stop audio capture
+            processor.disconnect();
+            source.disconnect();
+            mediaStream.getTracks().forEach(t => t.stop());
+            audioContext.close();
+        }
+    </script>
+</body>
+
+</html>
