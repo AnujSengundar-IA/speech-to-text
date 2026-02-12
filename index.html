@@ -108,6 +108,21 @@
             flex-wrap: wrap;
         }
 
+        .controls label {
+            font-weight: 700;
+            font-size: 0.86rem;
+            color: var(--ink-soft);
+        }
+
+        .controls select {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-size: 0.9rem;
+            background: #fff;
+            color: var(--ink);
+        }
+
         button {
             border: 0;
             border-radius: 12px;
@@ -291,6 +306,11 @@
         </header>
 
         <section class="controls">
+            <label for="modelSelect">Model</label>
+            <select id="modelSelect">
+                <option value="whisper">Whisper (small.en)</option>
+                <option value="parakeet">Parakeet (tdt-0.6b-v3)</option>
+            </select>
             <button id="startBtn" onclick="start()">Start</button>
             <button id="stopBtn" onclick="stop()" disabled>Stop</button>
             <button id="clearBtn" onclick="clearTranscript()">Clear</button>
@@ -309,7 +329,6 @@
     </main>
 
     <script>
-        let ws;
         let audioContext;
         let processor;
         let source;
@@ -317,13 +336,16 @@
         let isRecording = false;
         let isStarting = false;
         let partialText = "";
+        let lastPartialWindowStartSec = null;
         const finalTexts = [];
 
         function setButtons() {
             const startBtn = document.getElementById("startBtn");
             const stopBtn = document.getElementById("stopBtn");
+            const modelSelect = document.getElementById("modelSelect");
             startBtn.disabled = isRecording || isStarting;
             stopBtn.disabled = !isRecording && !isStarting;
+            modelSelect.disabled = isRecording || isStarting;
         }
 
         function setStatus(text, kind = "idle") {
@@ -379,6 +401,44 @@
             return parts.length ? `(${parts.join(", ")})` : "";
         }
 
+        function normalizeSpaces(text) {
+            return text.replace(/\s+/g, " ").trim();
+        }
+
+        function mergeSlidingPartial(previousText, incomingText) {
+            const prev = normalizeSpaces(previousText);
+            const incoming = normalizeSpaces(incomingText);
+            if (!prev) return incoming;
+            if (!incoming) return prev;
+
+            if (incoming.toLowerCase().startsWith(prev.toLowerCase())) {
+                return incoming;
+            }
+            if (prev.toLowerCase().endsWith(incoming.toLowerCase())) {
+                return prev;
+            }
+
+            const prevWords = prev.split(" ");
+            const incomingWords = incoming.split(" ");
+            const maxOverlap = Math.min(prevWords.length, incomingWords.length);
+            let overlap = 0;
+
+            for (let k = maxOverlap; k > 0; k--) {
+                const prevSuffix = prevWords.slice(-k).join(" ").toLowerCase();
+                const incomingPrefix = incomingWords.slice(0, k).join(" ").toLowerCase();
+                if (prevSuffix === incomingPrefix) {
+                    overlap = k;
+                    break;
+                }
+            }
+
+            if (overlap > 0) {
+                return `${prev} ${incomingWords.slice(overlap).join(" ")}`.trim();
+            }
+
+            return incoming;
+        }
+
         function handleServerMessage(rawData) {
             let data;
             try {
@@ -395,7 +455,23 @@
 
             switch (data.type) {
                 case "partial":
-                    partialText = typeof data.text === "string" ? data.text : "";
+                    if (typeof data.text === "string") {
+                        const incoming = normalizeSpaces(data.text);
+                        const windowStart = typeof data.window_start_sec === "number"
+                            ? data.window_start_sec
+                            : null;
+
+                        if (
+                            windowStart !== null
+                            && lastPartialWindowStartSec !== null
+                            && windowStart < lastPartialWindowStartSec
+                        ) {
+                            partialText = incoming;
+                        } else {
+                            partialText = mergeSlidingPartial(partialText, incoming);
+                        }
+                        lastPartialWindowStartSec = windowStart;
+                    }
                     renderTranscript();
                     break;
                 case "final":
@@ -403,6 +479,7 @@
                         finalTexts.push(data.text);
                     }
                     partialText = "";
+                    lastPartialWindowStartSec = null;
                     renderTranscript();
                     break;
                 case "status":
@@ -420,10 +497,48 @@
             }
         }
 
+        async function handleWorkletEvent(message) {
+            if (!message || typeof message !== "object") return;
+
+            if (message.type === "ws_message") {
+                handleServerMessage(message.payload);
+                return;
+            }
+
+            if (message.type === "ws_error") {
+                appendLog(`WebSocket error: ${message.message || "unknown error"}`, "error");
+                setStatus("Error", "error");
+                return;
+            }
+
+            if (message.type === "ws_status") {
+                appendLog(`worklet websocket ${message.status}`, "status");
+                if (message.status === "open") {
+                    setStatus("Connected", "recording");
+                }
+                if (message.status === "closed") {
+                    if (isRecording || isStarting) {
+                        await cleanupAudio();
+                        isRecording = false;
+                        isStarting = false;
+                        setButtons();
+                        if (document.getElementById("statusPill").textContent !== "Error") {
+                            setStatus("Idle");
+                        }
+                    }
+                }
+            }
+        }
+
         async function cleanupAudio() {
             if (processor) {
+                if (processor.port) {
+                    processor.port.onmessage = null;
+                }
                 processor.disconnect();
-                processor.onaudioprocess = null;
+                if (processor.onaudioprocess) {
+                    processor.onaudioprocess = null;
+                }
                 processor = null;
             }
             if (source) {
@@ -446,6 +561,7 @@
 
         function clearTranscript() {
             partialText = "";
+            lastPartialWindowStartSec = null;
             finalTexts.length = 0;
             document.getElementById("logList").innerHTML = "";
             renderTranscript();
@@ -460,66 +576,29 @@
             setStatus("Connecting...");
 
             try {
-                ws = new WebSocket("ws://localhost:8999/ws/transcribe");
-                ws.binaryType = "arraybuffer";
-
-                ws.onmessage = (e) => {
-                    handleServerMessage(e.data);
-                };
-
-                ws.onclose = async () => {
-                    await cleanupAudio();
-                    ws = null;
-                    isRecording = false;
-                    isStarting = false;
-                    setButtons();
-                    appendLog("WebSocket closed");
-                    if (document.getElementById("statusPill").textContent !== "Error") {
-                        setStatus("Idle");
-                    }
-                };
-
-                await new Promise((resolve, reject) => {
-                    const onOpen = () => {
-                        ws.removeEventListener("open", onOpen);
-                        ws.removeEventListener("error", onError);
-                        resolve();
-                    };
-                    const onError = () => {
-                        ws.removeEventListener("open", onOpen);
-                        ws.removeEventListener("error", onError);
-                        reject(new Error("WebSocket connection failed"));
-                    };
-                    ws.addEventListener("open", onOpen);
-                    ws.addEventListener("error", onError);
-                });
-
-                ws.onerror = () => {
-                    appendLog("WebSocket runtime error", "error");
-                    setStatus("Error", "error");
-                };
-
                 mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 audioContext = new AudioContext({ sampleRate: 16000 });
+                console.log("Sample rate:", audioContext.sampleRate);
 
                 source = audioContext.createMediaStreamSource(mediaStream);
-                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                await audioContext.audioWorklet.addModule("pcm-worklet.js");
+                const workletNode = new AudioWorkletNode(audioContext, "pcm-processor");
 
-                source.connect(processor);
-                processor.connect(audioContext.destination);
+                source.connect(workletNode);
+                workletNode.connect(audioContext.destination);
 
-                processor.onaudioprocess = (e) => {
-                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-                    const input = e.inputBuffer.getChannelData(0);
-                    const pcm16 = new Int16Array(input.length);
-
-                    for (let i = 0; i < input.length; i++) {
-                        pcm16[i] = Math.max(-1, Math.min(1, input[i])) * 32767;
-                    }
-
-                    ws.send(pcm16.buffer);
+                workletNode.port.onmessage = async (event) => {
+                    await handleWorkletEvent(event.data);
                 };
+                processor = workletNode;
+                const model = document.getElementById("modelSelect").value;
+                const endpoint = model === "parakeet"
+                    ? "ws://localhost:8999/ws/transcribe/parakeet"
+                    : "ws://localhost:8999/ws/transcribe";
+                processor.port.postMessage({
+                    type: "ws_connect",
+                    url: endpoint,
+                });
 
                 isRecording = true;
                 isStarting = false;
@@ -529,10 +608,6 @@
             } catch (err) {
                 appendLog(`Start failed: ${err.message || err}`, "error");
                 await cleanupAudio();
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.close();
-                }
-                ws = null;
                 isRecording = false;
                 isStarting = false;
                 setButtons();
@@ -541,11 +616,12 @@
         }
 
         async function stop() {
-            if (!ws) return;
-
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ event: "stop" }));
-                ws.close();
+            if (processor && processor.port) {
+                processor.port.postMessage({
+                    type: "ws_send_text",
+                    payload: JSON.stringify({ event: "stop" }),
+                });
+                processor.port.postMessage({ type: "ws_close" });
             }
 
             await cleanupAudio();
