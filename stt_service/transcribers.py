@@ -50,37 +50,65 @@ class WhisperTranscriber:
 
 class ParakeetTranscriber:
     def __init__(self, cfg: AppConfig):
-        self.cfg = cfg
+        self._hf = HFASRTranscriber(
+            model_id=cfg.parakeet_model_id,
+            device_name=cfg.parakeet_device,
+            dtype_name=cfg.parakeet_torch_dtype,
+            label="parakeet",
+        )
+
+    async def transcribe(self, audio: np.ndarray, sample_rate: int) -> tuple[str, float]:
+        return await self._hf.transcribe(audio, sample_rate)
+
+
+class HFASRTranscriber:
+    def __init__(
+        self,
+        model_id: str,
+        device_name: str,
+        dtype_name: str,
+        label: str,
+    ):
         logger.info(
-            "loading parakeet model id=%s device=%s dtype=%s",
-            cfg.parakeet_model_id,
-            cfg.parakeet_device,
-            cfg.parakeet_torch_dtype,
+            "loading %s model id=%s device=%s dtype=%s",
+            label,
+            model_id,
+            device_name,
+            dtype_name,
         )
 
         import torch
         from transformers import pipeline
+
+        # TDT Parakeet checkpoints are distributed as NeMo archives (.nemo)
+        # and are not loadable through the generic HF ASR pipeline.
+        if label == "parakeet" and "parakeet-tdt" in model_id.lower():
+            raise ValueError(
+                "Parakeet TDT checkpoints are not supported by the transformers ASR "
+                "pipeline in this project. Use a Parakeet CTC model id "
+                "(for example: nvidia/parakeet-ctc-0.6b) or add a NeMo backend."
+            )
 
         dtype_map = {
             "float16": torch.float16,
             "float32": torch.float32,
             "bfloat16": torch.bfloat16,
         }
-        torch_dtype = dtype_map.get(cfg.parakeet_torch_dtype.lower(), torch.float32)
+        torch_dtype = dtype_map.get(dtype_name.lower(), torch.float32)
 
         device = -1
-        if cfg.parakeet_device.startswith("cuda"):
-            parts = cfg.parakeet_device.split(":", maxsplit=1)
+        if device_name.startswith("cuda"):
+            parts = device_name.split(":", maxsplit=1)
             device = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
 
         self.pipe = pipeline(
             task="automatic-speech-recognition",
-            model=cfg.parakeet_model_id,
+            model=model_id,
             trust_remote_code=True,
             device=device,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
         )
-        logger.info("parakeet model loaded")
+        logger.info("%s model loaded", label)
 
     async def transcribe(self, audio: np.ndarray, sample_rate: int) -> tuple[str, float]:
         loop = asyncio.get_running_loop()

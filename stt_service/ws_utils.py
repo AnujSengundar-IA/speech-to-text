@@ -5,9 +5,22 @@ from typing import Optional
 
 from fastapi import WebSocket
 
+_SPECIAL_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"<pad>", re.IGNORECASE),
+    re.compile(r"</?s>", re.IGNORECASE),
+    re.compile(r"<\|[^|>]+?\|>"),
+)
+
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def sanitize_transcript_text(text: str) -> str:
+    cleaned = text
+    for pattern in _SPECIAL_TOKEN_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 async def send_event(ws: WebSocket, event_type: str, **payload: object) -> None:

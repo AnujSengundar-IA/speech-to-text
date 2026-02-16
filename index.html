@@ -206,21 +206,18 @@
             overflow: auto;
         }
 
-        .line {
-            border-radius: 10px;
-            padding: 10px 11px;
-            line-height: 1.4;
+        .transcript-paragraph {
+            margin: 0;
+            line-height: 1.6;
             word-break: break-word;
+            color: #22353d;
         }
 
-        .line.final {
-            background: #f2f8f4;
-            border: 1px solid #cae4d3;
+        .transcript-final {
+            color: #22353d;
         }
 
-        .line.partial {
-            background: #fff5eb;
-            border: 1px dashed #e5b487;
+        .transcript-partial {
             color: #6a4a31;
             font-style: italic;
         }
@@ -309,7 +306,7 @@
             <label for="modelSelect">Model</label>
             <select id="modelSelect">
                 <option value="whisper">Whisper (small.en)</option>
-                <option value="parakeet">Parakeet (tdt-0.6b-v3)</option>
+                <option value="parakeet">Parakeet (ctc-0.6b)</option>
             </select>
             <button id="startBtn" onclick="start()">Start</button>
             <button id="stopBtn" onclick="stop()" disabled>Stop</button>
@@ -333,11 +330,13 @@
         let processor;
         let source;
         let mediaStream;
+        let ws;
         let isRecording = false;
         let isStarting = false;
         let partialText = "";
         let lastPartialWindowStartSec = null;
-        const finalTexts = [];
+        let finalTranscript = "";
+        const wsMessageDecoder = typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
 
         function setButtons() {
             const startBtn = document.getElementById("startBtn");
@@ -359,20 +358,22 @@
         function renderTranscript() {
             const container = document.getElementById("transcript");
             container.innerHTML = "";
+            const paragraph = document.createElement("p");
+            paragraph.className = "transcript-paragraph";
 
-            for (const text of finalTexts) {
-                const div = document.createElement("div");
-                div.className = "line final";
-                div.textContent = text;
-                container.appendChild(div);
-            }
+            const finalSpan = document.createElement("span");
+            finalSpan.className = "transcript-final";
+            finalSpan.textContent = finalTranscript;
+            paragraph.appendChild(finalSpan);
 
             if (partialText) {
-                const div = document.createElement("div");
-                div.className = "line partial";
-                div.textContent = partialText;
-                container.appendChild(div);
+                const partialSpan = document.createElement("span");
+                partialSpan.className = "transcript-partial";
+                partialSpan.textContent = `${finalTranscript ? " " : ""}${partialText}`;
+                paragraph.appendChild(partialSpan);
             }
+
+            container.appendChild(paragraph);
 
             container.scrollTop = container.scrollHeight;
         }
@@ -476,7 +477,8 @@
                     break;
                 case "final":
                     if (typeof data.text === "string" && data.text.trim()) {
-                        finalTexts.push(data.text);
+                        const incoming = normalizeSpaces(data.text);
+                        finalTranscript = normalizeSpaces(`${finalTranscript} ${incoming}`);
                     }
                     partialText = "";
                     lastPartialWindowStartSec = null;
@@ -497,27 +499,66 @@
             }
         }
 
-        async function handleWorkletEvent(message) {
-            if (!message || typeof message !== "object") return;
-
-            if (message.type === "ws_message") {
-                handleServerMessage(message.payload);
-                return;
+        function decodeBinaryPayload(buffer) {
+            if (!(buffer instanceof ArrayBuffer)) return "";
+            if (wsMessageDecoder) {
+                return wsMessageDecoder.decode(buffer);
             }
+            return String.fromCharCode(...new Uint8Array(buffer));
+        }
 
-            if (message.type === "ws_error") {
-                appendLog(`WebSocket error: ${message.message || "unknown error"}`, "error");
-                setStatus("Error", "error");
-                return;
-            }
-
-            if (message.type === "ws_status") {
-                appendLog(`worklet websocket ${message.status}`, "status");
-                if (message.status === "open") {
-                    setStatus("Connected", "recording");
+        function connectWebSocket(url) {
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                try {
+                    ws = new WebSocket(url);
+                } catch (err) {
+                    reject(err);
+                    return;
                 }
-                if (message.status === "closed") {
-                    if (isRecording || isStarting) {
+
+                ws.binaryType = "arraybuffer";
+
+                ws.onopen = () => {
+                    appendLog("websocket open", "status");
+                    setStatus("Connected", "recording");
+                    if (!settled) {
+                        settled = true;
+                        resolve();
+                    }
+                };
+
+                ws.onmessage = async (event) => {
+                    let payload = event.data;
+                    if (payload instanceof ArrayBuffer) {
+                        payload = decodeBinaryPayload(payload);
+                    } else if (payload instanceof Blob) {
+                        payload = await payload.text();
+                    } else if (typeof payload !== "string") {
+                        payload = String(payload);
+                    }
+                    handleServerMessage(payload);
+                };
+
+                ws.onerror = () => {
+                    appendLog("websocket runtime error", "error");
+                    setStatus("Error", "error");
+                    if (!settled) {
+                        settled = true;
+                        reject(new Error("websocket connection failed"));
+                    }
+                };
+
+                ws.onclose = async () => {
+                    appendLog("websocket closed", "status");
+                    const shouldTearDownAudio = isRecording || isStarting;
+                    ws = null;
+                    if (!settled) {
+                        settled = true;
+                        reject(new Error("websocket closed before opening"));
+                        return;
+                    }
+                    if (shouldTearDownAudio) {
                         await cleanupAudio();
                         isRecording = false;
                         isStarting = false;
@@ -526,7 +567,23 @@
                             setStatus("Idle");
                         }
                     }
-                }
+                };
+            });
+        }
+
+        function closeWebSocket(sendStop = false) {
+            if (!ws) return;
+            const socket = ws;
+            ws = null;
+            if (sendStop && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ event: "stop" }));
+            }
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onerror = null;
+            socket.onclose = null;
+            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                socket.close();
             }
         }
 
@@ -562,7 +619,7 @@
         function clearTranscript() {
             partialText = "";
             lastPartialWindowStartSec = null;
-            finalTexts.length = 0;
+            finalTranscript = "";
             document.getElementById("logList").innerHTML = "";
             renderTranscript();
             setStatus("Idle");
@@ -587,18 +644,23 @@
                 source.connect(workletNode);
                 workletNode.connect(audioContext.destination);
 
-                workletNode.port.onmessage = async (event) => {
-                    await handleWorkletEvent(event.data);
+                workletNode.port.onmessage = (event) => {
+                    const message = event.data;
+                    if (!message || typeof message !== "object") return;
+                    if (message.type === "pcm_chunk") {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(message.payload);
+                        }
+                    }
                 };
                 processor = workletNode;
                 const model = document.getElementById("modelSelect").value;
-                const endpoint = model === "parakeet"
-                    ? "ws://localhost:8999/ws/transcribe/parakeet"
-                    : "ws://localhost:8999/ws/transcribe";
-                processor.port.postMessage({
-                    type: "ws_connect",
-                    url: endpoint,
-                });
+                const endpointMap = {
+                    whisper: "ws://127.0.0.1:8999/ws/transcribe",
+                    parakeet: "ws://127.0.0.1:8999/ws/transcribe/parakeet",
+                };
+                const endpoint = endpointMap[model] || endpointMap.whisper;
+                await connectWebSocket(endpoint);
 
                 isRecording = true;
                 isStarting = false;
@@ -607,6 +669,7 @@
                 appendLog("Microphone capture started", "status");
             } catch (err) {
                 appendLog(`Start failed: ${err.message || err}`, "error");
+                closeWebSocket(false);
                 await cleanupAudio();
                 isRecording = false;
                 isStarting = false;
@@ -616,13 +679,7 @@
         }
 
         async function stop() {
-            if (processor && processor.port) {
-                processor.port.postMessage({
-                    type: "ws_send_text",
-                    payload: JSON.stringify({ event: "stop" }),
-                });
-                processor.port.postMessage({ type: "ws_close" });
-            }
+            closeWebSocket(true);
 
             await cleanupAudio();
             isRecording = false;

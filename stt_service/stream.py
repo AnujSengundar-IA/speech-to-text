@@ -9,9 +9,38 @@ from stt_service.config import AppConfig
 from stt_service.security import is_authenticated, is_origin_allowed
 from stt_service.session import SessionState
 from stt_service.transcribers import Transcriber
-from stt_service.ws_utils import normalize_text, parse_event_frame, send_event
+from stt_service.ws_utils import (
+    normalize_text,
+    parse_event_frame,
+    sanitize_transcript_text,
+    send_event,
+)
 
 logger = logging.getLogger("speech_to_text")
+
+
+def _trim_overlap_prefix(previous_text: str, incoming_text: str) -> str:
+    prev = normalize_text(previous_text)
+    incoming = sanitize_transcript_text(incoming_text)
+    incoming_norm = normalize_text(incoming)
+    if not prev or not incoming_norm:
+        return incoming
+
+    prev_words = prev.split(" ")
+    incoming_words = incoming_norm.split(" ")
+    max_overlap = min(len(prev_words), len(incoming_words))
+    overlap = 0
+
+    for k in range(max_overlap, 0, -1):
+        if prev_words[-k:] == incoming_words[:k]:
+            overlap = k
+            break
+
+    if overlap == 0:
+        return incoming
+
+    trimmed_words = incoming.split(" ")[overlap:]
+    return " ".join(trimmed_words).strip()
 
 
 async def transcribe_and_emit(
@@ -35,7 +64,12 @@ async def transcribe_and_emit(
         return
 
     overlap_samples = int(cfg.overlap_sec * cfg.sample_rate)
-    window_start = max(0, state.last_transcribed_samples - overlap_samples)
+    # Partials run on an overlapping incremental window for responsiveness.
+    # Finals should use the full buffered segment for best accuracy.
+    if message_type == "final":
+        window_start = 0
+    else:
+        window_start = max(0, state.last_transcribed_samples - overlap_samples)
     audio = audio_full[window_start:]
     if audio.size == 0:
         return
@@ -63,12 +97,17 @@ async def transcribe_and_emit(
     finally:
         sem.release()
 
+    text = sanitize_transcript_text(text)
+    if message_type == "final" and window_start > 0:
+        text = _trim_overlap_prefix(state.last_final_text, text)
     base_offset_sec = window_start / cfg.sample_rate
     last_end = base_offset_sec + model_end_sec
     signature = (normalize_text(text), round(last_end, 2), message_type)
 
     if text and signature != state.last_signature:
         state.last_signature = signature
+        if message_type == "final":
+            state.last_final_text = text
         await send_event(
             ws,
             message_type,

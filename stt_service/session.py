@@ -17,6 +17,7 @@ class SessionState:
     last_partial_at: float = field(default_factory=time.monotonic)
     last_signature: Optional[tuple[str, float, str]] = None
     last_transcribed_samples: int = 0
+    last_final_text: str = ""
 
     @property
     def duration_sec(self) -> float:

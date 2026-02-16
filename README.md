@@ -12,7 +12,7 @@ Real-time speech-to-text server and browser client using FastAPI WebSockets.
 - Partial and final transcript events
 - Two model backends:
   - Faster-Whisper (`small.en` by default)
-  - NVIDIA Parakeet (`nvidia/parakeet-tdt-0.6b-v3`)
+  - NVIDIA Parakeet (`nvidia/parakeet-ctc-0.6b`)
 - Adaptive silence detection and automatic segment finalization
 - Optional WebSocket origin allowlist and token auth
 - Bounded buffering and backpressure control
@@ -138,9 +138,10 @@ Copy `.env.example` to `.env` and adjust as needed.
 
 ### Parakeet
 
-- `PARAKEET_MODEL_ID` (default `nvidia/parakeet-tdt-0.6b-v3`)
+- `PARAKEET_MODEL_ID` (default `nvidia/parakeet-ctc-0.6b`)
 - `PARAKEET_DEVICE` (`cpu`, `cuda`, `cuda:0`)
 - `PARAKEET_TORCH_DTYPE` (`float32`, `float16`, `bfloat16`)
+- `nvidia/parakeet-tdt-*` checkpoints are NeMo archives and are not loadable via the transformers backend used by this project.
 
 ### Audio / segmentation
 
@@ -172,11 +173,11 @@ Copy `.env.example` to `.env` and adjust as needed.
 
 If `WS_AUTH_TOKEN` is set, clients must provide token using query param `?token=...` or header `x-api-key`.
 
-## Notes on Parakeet
+## Notes on model loading
 
 - Parakeet model loading happens at app startup.
-- If model load fails, server still runs and Whisper works.
-- Parakeet endpoint then returns:
+- If Parakeet model load fails, server still runs and Whisper works.
+- Unavailable endpoint then returns:
 
 ```json
 {"type":"error","message":"model_unavailable"}

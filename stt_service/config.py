@@ -20,7 +20,7 @@ class AppConfig:
     whisper_model_device: str = "cpu"
     whisper_model_compute_type: str = "int8"
 
-    parakeet_model_id: str = "nvidia/parakeet-tdt-0.6b-v3"
+    parakeet_model_id: str = "nvidia/parakeet-ctc-0.6b"
     parakeet_device: str = "cpu"
     parakeet_torch_dtype: str = "float32"
 
@@ -51,7 +51,7 @@ class AppConfig:
             whisper_model_device=os.getenv("WHISPER_MODEL_DEVICE", "cpu"),
             whisper_model_compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
             parakeet_model_id=os.getenv(
-                "PARAKEET_MODEL_ID", "nvidia/parakeet-tdt-0.6b-v3"
+                "PARAKEET_MODEL_ID", "nvidia/parakeet-ctc-0.6b"
             ),
             parakeet_device=os.getenv("PARAKEET_DEVICE", "cpu"),
             parakeet_torch_dtype=os.getenv("PARAKEET_TORCH_DTYPE", "float32"),

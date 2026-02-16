@@ -6,7 +6,10 @@ from fastapi import FastAPI, WebSocket
 
 from stt_service.config import AppConfig
 from stt_service.stream import handle_transcribe_websocket
-from stt_service.transcribers import ParakeetTranscriber, WhisperTranscriber
+from stt_service.transcribers import (
+    ParakeetTranscriber,
+    WhisperTranscriber,
+)
 
 logging.basicConfig(
     level=logging.INFO,
