@@ -48,6 +48,7 @@ async def transcribe_and_emit(
     state: SessionState,
     cfg: AppConfig,
     transcriber: Transcriber,
+    language_id: str | None,
     message_type: str,
     reason: str,
     clear_after: bool,
@@ -87,7 +88,9 @@ async def transcribe_and_emit(
         return
 
     try:
-        text, model_end_sec = await transcriber.transcribe(audio, cfg.sample_rate)
+        text, model_end_sec = await transcriber.transcribe(
+            audio, cfg.sample_rate, language_id=language_id
+        )
     except Exception:
         logger.exception("transcription failed")
         await send_event(ws, "error", message="transcription_failed")
@@ -148,6 +151,7 @@ async def handle_transcribe_websocket(
         return
 
     state = SessionState(sample_rate=cfg.sample_rate)
+    language_id = ws.query_params.get("language_id")
     max_buffer_samples = int(cfg.max_buffer_sec * cfg.sample_rate)
 
     try:
@@ -182,6 +186,7 @@ async def handle_transcribe_websocket(
                         state,
                         cfg,
                         transcriber,
+                        language_id,
                         message_type="final",
                         reason="stop",
                         clear_after=True,
@@ -231,6 +236,7 @@ async def handle_transcribe_websocket(
                     state,
                     cfg,
                     transcriber,
+                    language_id,
                     message_type="partial",
                     reason="interval",
                     clear_after=False,
@@ -252,6 +258,7 @@ async def handle_transcribe_websocket(
                     state,
                     cfg,
                     transcriber,
+                    language_id,
                     message_type="final",
                     reason=reason,
                     clear_after=True,
@@ -274,6 +281,7 @@ async def handle_transcribe_websocket(
                     state,
                     cfg,
                     transcriber,
+                    language_id,
                     message_type="final",
                     reason="final_flush",
                     clear_after=True,

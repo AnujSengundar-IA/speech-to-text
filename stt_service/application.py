@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket
 from stt_service.config import AppConfig
 from stt_service.stream import handle_transcribe_websocket
 from stt_service.transcribers import (
+    IndicConformerTranscriber,
     ParakeetTranscriber,
     WhisperTranscriber,
 )
@@ -31,12 +32,19 @@ async def lifespan(app: FastAPI):
         app.state.parakeet_transcriber = None
         logger.exception("failed to load parakeet model")
 
+    try:
+        app.state.indicconformer_transcriber = IndicConformerTranscriber(cfg)
+    except Exception:
+        app.state.indicconformer_transcriber = None
+        logger.exception("failed to load indicconformer model")
+
     app.state.transcribe_semaphore = asyncio.Semaphore(cfg.max_concurrent_transcribes)
     try:
         yield
     finally:
         app.state.whisper_transcriber = None
         app.state.parakeet_transcriber = None
+        app.state.indicconformer_transcriber = None
         logger.info("shutdown complete")
 
 
@@ -53,3 +61,9 @@ async def transcribe_whisper(ws: WebSocket):
 async def transcribe_parakeet(ws: WebSocket):
     cfg: AppConfig = ws.app.state.config
     await handle_transcribe_websocket(ws, cfg, ws.app.state.parakeet_transcriber)
+
+
+@app.websocket("/ws/transcribe/indicconformer")
+async def transcribe_indicconformer(ws: WebSocket):
+    cfg: AppConfig = ws.app.state.config
+    await handle_transcribe_websocket(ws, cfg, ws.app.state.indicconformer_transcriber)

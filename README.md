@@ -1,18 +1,20 @@
-# Speech-to-Text Streaming (Whisper + Parakeet)
+# Speech-to-Text Streaming (Whisper + Parakeet + IndicConformer)
 
 Real-time speech-to-text server and browser client using FastAPI WebSockets.
 
 - Whisper endpoint: `/ws/transcribe`
 - Parakeet endpoint: `/ws/transcribe/parakeet`
+- IndicConformer endpoint: `/ws/transcribe/indicconformer`
 - Browser demo: `index.html` + `pcm-worklet.js`
 
 ## Features
 
 - Real-time streaming transcription from microphone audio
 - Partial and final transcript events
-- Two model backends:
+- Three model backends:
   - Faster-Whisper (`small.en` by default)
   - NVIDIA Parakeet (`nvidia/parakeet-ctc-0.6b`)
+  - AI4Bharat IndicConformer (NeMo `.nemo` checkpoint, 22 Indian languages)
 - Adaptive silence detection and automatic segment finalization
 - Optional WebSocket origin allowlist and token auth
 - Bounded buffering and backpressure control
@@ -24,7 +26,7 @@ main.py                      # thin entrypoint, exports app
 stt_service/
   application.py             # FastAPI app, lifespan, websocket routes
   config.py                  # environment config
-  transcribers.py            # WhisperTranscriber + ParakeetTranscriber
+  transcribers.py            # Whisper + Parakeet + IndicConformer backends
   stream.py                  # streaming websocket loop + emit logic
   session.py                 # session audio/chunk state
   ws_utils.py                # websocket helpers
@@ -82,10 +84,11 @@ python -m http.server 8080
 
 Open `http://localhost:8080/index.html`.
 
-1. Choose model (`Whisper` or `Parakeet`) in the dropdown.
-2. Click **Start**.
-3. Speak.
-4. Click **Stop** to flush a final segment.
+1. Choose model (`Whisper`, `Parakeet`, or `IndicConformer`) in the dropdown.
+2. For IndicConformer, pick a source language.
+3. Click **Start**.
+4. Speak.
+5. Click **Stop** to flush a final segment.
 
 ## WebSocket APIs
 
@@ -97,7 +100,12 @@ Open `http://localhost:8080/index.html`.
 
 - URL: `ws://localhost:8999/ws/transcribe/parakeet`
 
-Both endpoints accept the same protocol.
+### 3) IndicConformer
+
+- URL: `ws://localhost:8999/ws/transcribe/indicconformer?language_id=hi`
+- `language_id` is optional. If omitted, server uses `INDICCONFORMER_DEFAULT_LANGUAGE_ID`.
+
+All endpoints accept the same protocol.
 
 ### Client -> Server
 
@@ -143,6 +151,21 @@ Copy `.env.example` to `.env` and adjust as needed.
 - `PARAKEET_TORCH_DTYPE` (`float32`, `float16`, `bfloat16`)
 - `nvidia/parakeet-tdt-*` checkpoints are NeMo archives and are not loadable via the transformers backend used by this project.
 
+### IndicConformer
+
+- default model source: `ai4bharat/indic-conformer-600m-multilingual`
+- `INDICCONFORMER_CHECKPOINT_PATH` (optional override; one of:)
+- local `.nemo` checkpoint path
+- local HF snapshot directory path
+- HF repo id (for example `ai4bharat/indic-conformer-600m-multilingual`)
+- `INDICCONFORMER_DEVICE` (`cpu`, `cuda`, `cuda:0`)
+- `INDICCONFORMER_DECODER` (`ctc` or `rnnt`)
+- `INDICCONFORMER_DEFAULT_LANGUAGE_ID` (default `hi`)
+- `INDICCONFORMER_BATCH_SIZE` (default `1`)
+
+22-language codes exposed in the demo UI:
+`as`, `bn`, `brx`, `doi`, `gu`, `hi`, `kn`, `ks`, `kok`, `mai`, `ml`, `mni`, `mr`, `ne`, `or`, `pa`, `sa`, `sat`, `sd`, `ta`, `te`, `ur`.
+
 ### Audio / segmentation
 
 - `SAMPLE_RATE` (default `16000`)
@@ -175,8 +198,8 @@ If `WS_AUTH_TOKEN` is set, clients must provide token using query param `?token=
 
 ## Notes on model loading
 
-- Parakeet model loading happens at app startup.
-- If Parakeet model load fails, server still runs and Whisper works.
+- Parakeet and IndicConformer model loading happens at app startup.
+- If a model load fails, server still runs and other endpoints still work.
 - Unavailable endpoint then returns:
 
 ```json

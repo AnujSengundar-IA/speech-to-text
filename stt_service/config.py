@@ -23,6 +23,13 @@ class AppConfig:
     parakeet_model_id: str = "nvidia/parakeet-ctc-0.6b"
     parakeet_device: str = "cpu"
     parakeet_torch_dtype: str = "float32"
+    indicconformer_checkpoint_path: str = (
+        "ai4bharat/indic-conformer-600m-multilingual"
+    )
+    indicconformer_device: str = "cpu"
+    indicconformer_decoder: str = "ctc"
+    indicconformer_default_language_id: str = "hi"
+    indicconformer_batch_size: int = 1
 
     language: str = "en"
     sample_rate: int = 16000
@@ -55,6 +62,18 @@ class AppConfig:
             ),
             parakeet_device=os.getenv("PARAKEET_DEVICE", "cpu"),
             parakeet_torch_dtype=os.getenv("PARAKEET_TORCH_DTYPE", "float32"),
+            indicconformer_checkpoint_path=os.getenv(
+                "INDICCONFORMER_CHECKPOINT_PATH",
+                "ai4bharat/indic-conformer-600m-multilingual",
+            ),
+            indicconformer_device=os.getenv("INDICCONFORMER_DEVICE", "cpu"),
+            indicconformer_decoder=os.getenv("INDICCONFORMER_DECODER", "ctc"),
+            indicconformer_default_language_id=os.getenv(
+                "INDICCONFORMER_DEFAULT_LANGUAGE_ID", "hi"
+            ),
+            indicconformer_batch_size=int(
+                os.getenv("INDICCONFORMER_BATCH_SIZE", "1")
+            ),
             language=os.getenv("WHISPER_LANGUAGE", "en"),
             sample_rate=int(os.getenv("SAMPLE_RATE", "16000")),
             min_audio_sec=float(os.getenv("MIN_AUDIO_SEC", "0.5")),
